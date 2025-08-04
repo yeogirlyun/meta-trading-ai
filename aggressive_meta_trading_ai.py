@@ -1,39 +1,59 @@
-import pickle
 import pandas as pd
 import numpy as np
-from typing import Dict, List, Tuple
+import pickle
 from datetime import datetime, timedelta
-import time
-import warnings
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.preprocessing import StandardScaler
+import warnings
 warnings.filterwarnings('ignore')
 
+# ============================================================================
+# MARKET REGIME DETECTION
+# ============================================================================
+
+def detect_market_regime(data: pd.DataFrame) -> str:
+    """
+    Detects the current market regime based on volatility and trend strength.
+    """
+    if len(data) < 50:
+        return "ranging"  # Default for insufficient data
+    
+    volatility = data['close'].pct_change().rolling(20).std().iloc[-1]
+    avg_vol = data['close'].pct_change().rolling(50).std().mean()
+    trend_strength = abs(data['close'].pct_change().rolling(20).mean().iloc[-1]) / volatility
+
+    if volatility > avg_vol * 1.8:
+        return "high_volatility"
+    elif trend_strength > 0.6:
+        return "trending"
+    else:
+        return "ranging"
+
+# ============================================================================
+# HYPER-AGGRESSIVE STRATEGY POOLS
+# ============================================================================
 
 class AggressiveMetaStrategy:
-    """Aggressive meta strategy designed for 5% returns over 2 weeks"""
+    """Base class for aggressive meta strategies"""
     
     def __init__(self, name: str):
         self.name = name
         self.parameters = {}
-        
-    def set_parameters(self, params: Dict):
-        """Set strategy parameters"""
+    
+    def set_parameters(self, params: dict):
         self.parameters.update(params)
-        
+    
     def calculate_signals(self, data: pd.DataFrame) -> pd.Series:
-        """Calculate trading signals (1 for buy, -1 for sell, 0 for hold)"""
         raise NotImplementedError
-        
-    def backtest(self, data: pd.DataFrame, initial_capital: float = 100000) -> Dict:
-        """Run backtest and return performance metrics"""
+    
+    def backtest(self, data: pd.DataFrame, initial_capital: float = 100000) -> dict:
         signals = self.calculate_signals(data)
         
-        # Initialize tracking variables
         position = 0  # 1 for long, -1 for short, 0 for flat
         capital = initial_capital
-        equity = [initial_capital]
+        equity = [capital]
         trades = []
+        hourly_returns = []
         
         for i in range(1, len(data)):
             current_price = data.iloc[i]['close']
@@ -62,84 +82,67 @@ class AggressiveMetaStrategy:
                         'pnl': current_price - prev_price
                     })
                 position = -1
-                
+            
             # Calculate returns
             if position == 1:  # Long position
-                daily_return = (current_price - prev_price) / prev_price
+                hourly_return = (current_price - prev_price) / prev_price
             elif position == -1:  # Short position
-                daily_return = (prev_price - current_price) / prev_price
+                hourly_return = (prev_price - current_price) / prev_price
             else:
-                daily_return = 0
-                
-            capital *= (1 + daily_return)
+                hourly_return = 0
+            
+            capital *= (1 + hourly_return)
             equity.append(capital)
-            
-        # Calculate performance metrics
-        equity_series = pd.Series(equity, index=data.index)
-        returns = equity_series.pct_change().dropna()
+            hourly_returns.append(hourly_return)
         
+        # Calculate metrics
         total_return = (equity[-1] - initial_capital) / initial_capital
-        if returns.std() > 0:
-            sharpe_ratio = returns.mean() / returns.std() * np.sqrt(252)
-        else:
-            sharpe_ratio = 0
-            
-        # Calculate hourly returns for target analysis
-        hourly_data = data.resample('H').agg({
-            'open': 'first', 'high': 'max', 'low': 'min', 
-            'close': 'last', 'volume': 'sum'
-        }).dropna()
-        
-        hourly_equity = equity_series.resample('H').last()
-        hourly_returns = hourly_equity.pct_change().dropna()
-        
-        # Target metrics for 5% goal
-        avg_hourly_return = hourly_returns.mean() if len(hourly_returns) > 0 else 0
-        target_hourly_01 = len(hourly_returns[hourly_returns >= 0.001]) / len(hourly_returns) if len(hourly_returns) > 0 else 0
+        avg_hourly_return = np.mean(hourly_returns) if hourly_returns else 0
         
         # 10-day rolling returns (2 weeks)
+        hourly_equity = pd.Series(equity, index=data.index)
         rolling_10d = hourly_equity.pct_change(80).dropna()  # 80 hours = 10 trading days
         target_10d_05 = len(rolling_10d[rolling_10d >= 0.05]) / len(rolling_10d) if len(rolling_10d) > 0 else 0
         
         return {
             'total_return': total_return,
-            'sharpe_ratio': sharpe_ratio,
-            'equity_curve': equity_series,
-            'trades': trades,
             'avg_hourly_return': avg_hourly_return,
-            'target_hourly_01_pct': target_hourly_01,
-            'target_10d_05_pct': target_10d_05,
-            'num_trades': len(trades)
+            'trades': trades,
+            'num_trades': len(trades),
+            'target_10d_05_pct': target_10d_05
         }
 
+# ============================================================================
+# HIGH-VOLATILITY POOL STRATEGIES
+# ============================================================================
 
-class AggressiveVolatilityExploitation(AggressiveMetaStrategy):
-    """Aggressive volatility exploitation with higher thresholds"""
+class UltraVolatilityExploitation(AggressiveMetaStrategy):
+    """Ultra-aggressive volatility exploitation with even lower thresholds"""
     
     def __init__(self):
-        super().__init__("Aggressive Volatility Exploitation")
+        super().__init__("Ultra Volatility Exploitation")
         self.parameters = {
-            'volatility_threshold': 0.005,  # Lower threshold for more signals
-            'momentum_period': 3,           # Shorter period for faster response
-            'reversal_threshold': 0.005,    # Lower threshold for more signals
-            'max_hold_period': 15,          # Shorter hold period
-            'volume_threshold': 1.1         # Lower volume requirement
+            'volatility_threshold': 0.0015,  # Ultra-low threshold
+            'momentum_period': 2,            # Very short period
+            'reversal_threshold': 0.0015,    # Ultra-low threshold
+            'max_hold_period': 10,           # Shorter hold period
+            'volume_threshold': 1.05         # Lower volume requirement
         }
     
     def calculate_signals(self, data: pd.DataFrame) -> pd.Series:
         # Calculate volatility
-        volatility = data['close'].pct_change().rolling(10).std()  # Shorter window
+        volatility = data['close'].pct_change().rolling(10).std()
         
         # Calculate momentum
         momentum = data['close'].pct_change(self.parameters['momentum_period'])
         
         # Calculate volume confirmation
-        avg_volume = data['volume'].rolling(10).mean()  # Shorter window
+        avg_volume = data['volume'].rolling(10).mean()
         volume_ratio = data['volume'] / avg_volume
         
         signals = pd.Series(0, index=data.index)
         
-        # Entry conditions - more aggressive
+        # Entry conditions - ultra aggressive
         high_vol = volatility > self.parameters['volatility_threshold']
         volume_confirmed = volume_ratio > self.parameters['volume_threshold']
         
@@ -160,30 +163,67 @@ class AggressiveVolatilityExploitation(AggressiveMetaStrategy):
         signals[long_condition] = 1
         signals[short_condition] = -1
         
-        # Exit after max hold period
-        for i in range(self.parameters['max_hold_period'], len(signals)):
-            if signals.iloc[i] != 0:
-                if i - self.parameters['max_hold_period'] >= 0:
-                    last_signal = signals.iloc[i - self.parameters['max_hold_period']]
-                    if last_signal != 0:
-                        signals.iloc[i] = 0  # Exit position
+        return signals
+
+class BreakoutMomentum(AggressiveMetaStrategy):
+    """New strategy for trading sharp, sudden price movements"""
+    
+    def __init__(self):
+        super().__init__("Breakout Momentum")
+        self.parameters = {
+            'breakout_period': 10,
+            'confirmation_period': 3,
+            'volume_multiplier': 2.0,
+            'momentum_threshold': 0.002,
+            'max_hold_period': 15
+        }
+    
+    def calculate_signals(self, data: pd.DataFrame) -> pd.Series:
+        # Calculate breakout levels
+        highest_high = data['high'].rolling(self.parameters['breakout_period']).max()
+        lowest_low = data['low'].rolling(self.parameters['breakout_period']).min()
+        
+        # Breakout conditions
+        breakout_up = data['close'] > highest_high.shift(1)
+        breakout_down = data['close'] < lowest_low.shift(1)
+        
+        # Volume confirmation
+        avg_volume = data['volume'].rolling(20).mean()
+        volume_spike = data['volume'] > avg_volume * self.parameters['volume_multiplier']
+        
+        # Momentum confirmation
+        momentum = data['close'].pct_change(self.parameters['confirmation_period'])
+        momentum_confirmed = abs(momentum) > self.parameters['momentum_threshold']
+        
+        signals = pd.Series(0, index=data.index)
+        
+        # Long on upward breakout with volume and momentum
+        long_condition = breakout_up & volume_spike & (momentum > 0) & momentum_confirmed
+        signals[long_condition] = 1
+        
+        # Short on downward breakout with volume and momentum
+        short_condition = breakout_down & volume_spike & (momentum < 0) & momentum_confirmed
+        signals[short_condition] = -1
         
         return signals
 
+# ============================================================================
+# TRENDING POOL STRATEGIES
+# ============================================================================
 
-class AggressiveMomentumAmplification(AggressiveMetaStrategy):
-    """Aggressive momentum amplification with higher thresholds"""
+class UltraMomentumAmplification(AggressiveMetaStrategy):
+    """Ultra-aggressive momentum amplification for trending markets"""
     
     def __init__(self):
-        super().__init__("Aggressive Momentum Amplification")
+        super().__init__("Ultra Momentum Amplification")
         self.parameters = {
-            'short_period': 2,             # Very short period
-            'medium_period': 5,            # Shorter medium period
-            'long_period': 15,             # Shorter long period
-            'momentum_threshold': 0.003,   # Lower threshold
-            'volume_threshold': 1.1,       # Lower volume requirement
-            'acceleration_threshold': 0.001,  # Lower acceleration threshold
-            'max_hold_period': 20          # Shorter hold period
+            'short_period': 1,              # Ultra-short period
+            'medium_period': 3,             # Shorter medium period
+            'long_period': 10,              # Shorter long period
+            'momentum_threshold': 0.0008,   # Ultra-low threshold
+            'acceleration_threshold': 0.0005, # Ultra-low acceleration
+            'volume_threshold': 1.05,       # Lower volume requirement
+            'max_hold_period': 15           # Shorter hold period
         }
     
     def calculate_signals(self, data: pd.DataFrame) -> pd.Series:
@@ -196,22 +236,22 @@ class AggressiveMomentumAmplification(AggressiveMetaStrategy):
         acceleration = short_momentum.diff()
         
         # Calculate volume confirmation
-        avg_volume = data['volume'].rolling(10).mean()  # Shorter window
+        avg_volume = data['volume'].rolling(10).mean()
         volume_ratio = data['volume'] / avg_volume
         
         # Calculate volatility
-        volatility = data['close'].pct_change().rolling(5).std()  # Shorter window
+        volatility = data['close'].pct_change().rolling(5).std()
         
         signals = pd.Series(0, index=data.index)
         
-        # Strong buy when all momentum indicators align - more aggressive
+        # Strong buy when all momentum indicators align
         strong_buy = (
             (short_momentum > self.parameters['momentum_threshold']) &
             (medium_momentum > self.parameters['momentum_threshold']) &
             (long_momentum > 0) &
             (acceleration > self.parameters['acceleration_threshold']) &
             (volume_ratio > self.parameters['volume_threshold']) &
-            (volatility < volatility.rolling(20).mean() * 3)  # More permissive
+            (volatility < volatility.rolling(20).mean() * 3)
         )
         
         # Strong sell when all momentum indicators align negatively
@@ -227,153 +267,161 @@ class AggressiveMomentumAmplification(AggressiveMetaStrategy):
         signals[strong_buy] = 1
         signals[strong_sell] = -1
         
-        # Exit after max hold period
-        for i in range(self.parameters['max_hold_period'], len(signals)):
-            if signals.iloc[i] != 0:
-                if i - self.parameters['max_hold_period'] >= 0:
-                    last_signal = signals.iloc[i - self.parameters['max_hold_period']]
-                    if last_signal != 0:
-                        signals.iloc[i] = 0  # Exit position
-        
         return signals
 
-
-class AggressiveGapExploitation(AggressiveMetaStrategy):
-    """Aggressive gap exploitation with higher thresholds"""
+class AcceleratedMACross(AggressiveMetaStrategy):
+    """Faster version of moving average crossover to catch trends earlier"""
     
     def __init__(self):
-        super().__init__("Aggressive Gap Exploitation")
+        super().__init__("Accelerated MA Cross")
         self.parameters = {
-            'gap_threshold': 0.002,       # Lower gap threshold
-            'fade_threshold': 0.003,      # Lower fade threshold
-            'momentum_threshold': 0.001,  # Lower momentum threshold
-            'volume_threshold': 1.1,      # Lower volume requirement
-            'max_hold_period': 20         # Shorter hold period
+            'fast_period': 2,               # Ultra-fast period
+            'slow_period': 8,               # Shorter slow period
+            'momentum_threshold': 0.001,    # Low momentum threshold
+            'volume_threshold': 1.05,       # Lower volume requirement
+            'max_hold_period': 20           # Shorter hold period
         }
     
     def calculate_signals(self, data: pd.DataFrame) -> pd.Series:
-        # Resample to daily data for gap detection
-        daily_data = data.resample('D').agg({
-            'open': 'first', 'high': 'max', 'low': 'min', 
-            'close': 'last', 'volume': 'sum'
-        }).dropna()
+        # Calculate moving averages
+        fast_ma = data['close'].rolling(self.parameters['fast_period']).mean()
+        slow_ma = data['close'].rolling(self.parameters['slow_period']).mean()
         
-        # Calculate gaps
-        gaps = (daily_data['open'] - daily_data['close'].shift(1)) / daily_data['close'].shift(1)
-        
-        # Resample back to minute data
-        gap_signals = gaps.reindex(data.index, method='ffill')
-        
-        # Calculate intraday momentum
-        momentum = data['close'].pct_change(3)  # Shorter period
+        # Calculate momentum
+        momentum = data['close'].pct_change(3)
         
         # Calculate volume confirmation
-        avg_volume = data['volume'].rolling(10).mean()  # Shorter window
+        avg_volume = data['volume'].rolling(10).mean()
         volume_ratio = data['volume'] / avg_volume
         
         signals = pd.Series(0, index=data.index)
         
-        # Gap fade strategy - more aggressive
-        large_gap_up = gap_signals > self.parameters['gap_threshold']
-        large_gap_down = gap_signals < -self.parameters['gap_threshold']
-        
-        # Fade gap up with negative momentum
-        fade_up = (
-            large_gap_up &
-            (momentum < -self.parameters['momentum_threshold']) &
-            (volume_ratio > self.parameters['volume_threshold'])
-        )
-        
-        # Fade gap down with positive momentum
-        fade_down = (
-            large_gap_down &
+        # Golden cross (fast MA crosses above slow MA)
+        golden_cross = (
+            (fast_ma > slow_ma) & 
+            (fast_ma.shift(1) <= slow_ma.shift(1)) &
             (momentum > self.parameters['momentum_threshold']) &
             (volume_ratio > self.parameters['volume_threshold'])
         )
         
-        signals[fade_up] = -1  # Short gap up
-        signals[fade_down] = 1  # Long gap down
+        # Death cross (fast MA crosses below slow MA)
+        death_cross = (
+            (fast_ma < slow_ma) & 
+            (fast_ma.shift(1) >= slow_ma.shift(1)) &
+            (momentum < -self.parameters['momentum_threshold']) &
+            (volume_ratio > self.parameters['volume_threshold'])
+        )
         
-        # Exit after max hold period
-        for i in range(self.parameters['max_hold_period'], len(signals)):
-            if signals.iloc[i] != 0:
-                if i - self.parameters['max_hold_period'] >= 0:
-                    last_signal = signals.iloc[i - self.parameters['max_hold_period']]
-                    if last_signal != 0:
-                        signals.iloc[i] = 0  # Exit position
+        signals[golden_cross] = 1
+        signals[death_cross] = -1
         
         return signals
 
+# ============================================================================
+# RANGING POOL STRATEGIES
+# ============================================================================
 
-class AggressiveHighFrequencyScalping(AggressiveMetaStrategy):
-    """Aggressive high-frequency scalping strategy"""
+class UltraHighFrequencyScalping(AggressiveMetaStrategy):
+    """Ultra-fast scalping with very tight profit targets and stop-losses"""
     
     def __init__(self):
-        super().__init__("Aggressive High-Frequency Scalping")
+        super().__init__("Ultra High-Frequency Scalping")
         self.parameters = {
-            'scalp_threshold': 0.001,     # Very low threshold
-            'volume_threshold': 1.05,     # Very low volume requirement
-            'max_hold_period': 5,         # Very short hold period
-            'profit_target': 0.002,       # 0.2% profit target
-            'stop_loss': 0.001            # 0.1% stop loss
+            'scalp_threshold': 0.0005,      # Ultra-tight entry threshold
+            'volume_threshold': 1.0,        # Lower volume requirement
+            'max_hold_period': 1,           # 1-minute max hold
+            'profit_target': 0.001,         # 0.1% profit target
+            'stop_loss': 0.0005             # 0.05% stop loss
         }
     
     def calculate_signals(self, data: pd.DataFrame) -> pd.Series:
-        # Calculate short-term price changes
+        # Calculate price changes
         price_change = data['close'].pct_change()
         
         # Calculate volume confirmation
-        avg_volume = data['volume'].rolling(5).mean()  # Very short window
+        avg_volume = data['volume'].rolling(10).mean()
         volume_ratio = data['volume'] / avg_volume
         
         # Calculate volatility
-        volatility = price_change.rolling(5).std()
+        volatility = data['close'].pct_change().rolling(5).std()
         
         signals = pd.Series(0, index=data.index)
         
-        # Scalping conditions - very aggressive
-        high_volume = volume_ratio > self.parameters['volume_threshold']
-        low_volatility = volatility < volatility.rolling(10).mean() * 2
-        
-        # Long scalping
-        long_scalp = (
+        # Scalp long on small positive moves with volume
+        scalp_long = (
             (price_change > self.parameters['scalp_threshold']) &
-            high_volume &
-            low_volatility
+            (volume_ratio > self.parameters['volume_threshold']) &
+            (volatility < volatility.rolling(20).mean() * 2)
         )
         
-        # Short scalping
-        short_scalp = (
+        # Scalp short on small negative moves with volume
+        scalp_short = (
             (price_change < -self.parameters['scalp_threshold']) &
-            high_volume &
-            low_volatility
+            (volume_ratio > self.parameters['volume_threshold']) &
+            (volatility < volatility.rolling(20).mean() * 2)
         )
         
-        signals[long_scalp] = 1
-        signals[short_scalp] = -1
-        
-        # Exit after max hold period
-        for i in range(self.parameters['max_hold_period'], len(signals)):
-            if signals.iloc[i] != 0:
-                if i - self.parameters['max_hold_period'] >= 0:
-                    last_signal = signals.iloc[i - self.parameters['max_hold_period']]
-                    if last_signal != 0:
-                        signals.iloc[i] = 0  # Exit position
+        signals[scalp_long] = 1
+        signals[scalp_short] = -1
         
         return signals
 
+class ExtremeMeanReversion(AggressiveMetaStrategy):
+    """Strategy that trades on extreme deviations from the short-term mean"""
+    
+    def __init__(self):
+        super().__init__("Extreme Mean Reversion")
+        self.parameters = {
+            'mean_period': 5,               # Short-term mean
+            'deviation_threshold': 0.002,   # Low deviation threshold
+            'volume_threshold': 1.05,       # Lower volume requirement
+            'max_hold_period': 10           # Shorter hold period
+        }
+    
+    def calculate_signals(self, data: pd.DataFrame) -> pd.Series:
+        # Calculate short-term mean
+        short_mean = data['close'].rolling(self.parameters['mean_period']).mean()
+        
+        # Calculate deviation from mean
+        deviation = (data['close'] - short_mean) / short_mean
+        
+        # Calculate volume confirmation
+        avg_volume = data['volume'].rolling(10).mean()
+        volume_ratio = data['volume'] / avg_volume
+        
+        signals = pd.Series(0, index=data.index)
+        
+        # Long when price is significantly below mean
+        long_condition = (
+            (deviation < -self.parameters['deviation_threshold']) &
+            (volume_ratio > self.parameters['volume_threshold'])
+        )
+        
+        # Short when price is significantly above mean
+        short_condition = (
+            (deviation > self.parameters['deviation_threshold']) &
+            (volume_ratio > self.parameters['volume_threshold'])
+        )
+        
+        signals[long_condition] = 1
+        signals[short_condition] = -1
+        
+        return signals
+
+# ============================================================================
+# STRATEGY SELECTOR
+# ============================================================================
 
 class AggressiveStrategySelector:
-    """Aggressive meta-learning system to select the best strategy for each hour"""
+    """Strategy selector using Random Forest for regime-specific strategy pools"""
     
-    def __init__(self, strategies: List[AggressiveMetaStrategy]):
-        self.strategies = strategies
-        self.selector_model = RandomForestClassifier(n_estimators=100, random_state=42)
+    def __init__(self):
+        self.model = RandomForestClassifier(n_estimators=100, random_state=42)
         self.scaler = StandardScaler()
-        self.feature_columns = []
+        self.strategies = []
         self.is_trained = False
-        
-    def extract_market_features(self, data: pd.DataFrame) -> pd.DataFrame:
+    
+    def extract_features(self, data: pd.DataFrame) -> pd.DataFrame:
         """Extract market features for strategy selection"""
         features = pd.DataFrame(index=data.index)
         
@@ -403,9 +451,7 @@ class AggressiveStrategySelector:
         features['trend_3_10'] = (features['sma_3'] - features['sma_10']) / features['sma_10']
         
         # Gap features
-        daily_data = data.resample('D').agg({
-            'open': 'first', 'close': 'last'
-        }).dropna()
+        daily_data = data.resample('D').agg({'open': 'first', 'close': 'last'}).dropna()
         gaps = (daily_data['open'] - daily_data['close'].shift(1)) / daily_data['close'].shift(1)
         gap_signals = gaps.reindex(data.index, method='ffill')
         features['gap_size'] = gap_signals
@@ -414,142 +460,162 @@ class AggressiveStrategySelector:
         features['hour'] = data.index.hour
         features['day_of_week'] = data.index.dayofweek
         
-        # Remove NaN values
-        features = features.dropna()
-        
-        return features
+        return features.dropna()
     
-    def train_selector(self, training_data: pd.DataFrame, 
-                      strategy_performances: Dict[str, List[float]]) -> None:
-        """Train the strategy selector model"""
-        print("Training aggressive strategy selector...")
+    def train_selector(self, data: pd.DataFrame, strategy_performances: dict):
+        """Train the strategy selector"""
+        features = self.extract_features(data)
         
-        # Extract market features
-        features = self.extract_market_features(training_data)
+        # Group data by hour and find best strategy per hour
+        hourly_data = []
+        hourly_labels = []
         
-        # Prepare labels (strategy with best performance for each hour)
-        labels = []
-        feature_samples = []
-        
-        # Group by hour and find best performing strategy
-        for hour in range(24):
-            hour_data = features[features['hour'] == hour]
+        for hour in range(9, 16):  # Trading hours 9 AM to 4 PM
+            hour_data = data[data.index.hour == hour]
             if len(hour_data) == 0:
                 continue
-                
-            # Get performance for this hour for each strategy
-            hour_performances = {}
-            for strategy_name, performances in strategy_performances.items():
-                if len(performances) > hour:
-                    hour_performances[strategy_name] = performances[hour]
             
-            if hour_performances:
-                # Find best performing strategy
-                best_strategy = max(hour_performances.keys(), 
-                                  key=lambda x: hour_performances[x])
-                
-                # Create labels for this hour
-                for strategy_name in self.strategies:
-                    if strategy_name.name == best_strategy:
-                        labels.append(1)
-                    else:
-                        labels.append(0)
-                    
-                    # Use average features for this hour
-                    hour_features = hour_data.mean()
-                    feature_samples.append(hour_features.values)
+            # Find best performing strategy for this hour
+            best_strategy = None
+            best_performance = -np.inf
+            
+            for strategy_name, performances in strategy_performances.items():
+                if len(performances) > 0:
+                    avg_performance = np.mean(performances)
+                    if avg_performance > best_performance:
+                        best_performance = avg_performance
+                        best_strategy = strategy_name
+            
+            if best_strategy is not None:
+                # Use features from this hour
+                hour_features = features[features.index.hour == hour]
+                if len(hour_features) > 0:
+                    # Use the most recent features for this hour
+                    latest_features = hour_features.iloc[-1:].values
+                    hourly_data.append(latest_features.flatten())
+                    hourly_labels.append(best_strategy)
         
-        if len(feature_samples) > 0:
-            # Convert to numpy arrays
-            X = np.array(feature_samples)
-            y = np.array(labels)
+        if len(hourly_data) > 0:
+            X = np.array(hourly_data)
+            y = np.array(hourly_labels)
             
             # Scale features
             X_scaled = self.scaler.fit_transform(X)
             
             # Train model
-            self.selector_model.fit(X_scaled, y)
-            self.feature_columns = features.columns.tolist()
+            self.model.fit(X_scaled, y)
             self.is_trained = True
-            
-            print(f"Aggressive strategy selector trained with {len(X)} samples")
-        else:
-            print("Warning: No training data available for strategy selector")
     
-    def select_best_strategy(self, current_data: pd.DataFrame) -> AggressiveMetaStrategy:
-        """Select the best strategy for the current market conditions"""
-        if not self.is_trained:
-            # If not trained, return random strategy
-            return np.random.choice(self.strategies)
+    def select_strategy(self, current_data: pd.DataFrame) -> AggressiveMetaStrategy:
+        """Select the best strategy for current market conditions"""
+        if not self.is_trained or len(self.strategies) == 0:
+            return self.strategies[0] if self.strategies else None
         
         # Extract features for current data
-        features = self.extract_market_features(current_data)
+        features = self.extract_features(current_data)
         if len(features) == 0:
-            return np.random.choice(self.strategies)
+            return self.strategies[0]
         
         # Use most recent features
         current_features = features.iloc[-1:].values
         current_features_scaled = self.scaler.transform(current_features)
         
-        # Predict probabilities for each strategy
-        probabilities = self.selector_model.predict_proba(current_features_scaled)
+        # Predict best strategy
+        predicted_strategy = self.model.predict(current_features_scaled)[0]
         
-        # Find strategy with highest probability
-        best_strategy_idx = np.argmax(probabilities[0])
-        best_strategy = self.strategies[best_strategy_idx]
+        # Find strategy by name
+        for strategy in self.strategies:
+            if strategy.name == predicted_strategy:
+                return strategy
         
-        return best_strategy
+        return self.strategies[0]  # Default to first strategy
 
+# ============================================================================
+# MAIN SYSTEM
+# ============================================================================
 
 class AggressiveMetaTradingAI:
-    """Aggressive meta-trading AI system designed for 5% returns"""
+    """Aggressive meta-trading AI system with regime detection"""
     
-    def __init__(self, data: pd.DataFrame, strategies: List[AggressiveMetaStrategy]):
-        self.data = data
-        self.strategies = strategies
-        self.selector = AggressiveStrategySelector(strategies)
-        self.start_time = None
+    def __init__(self):
+        # Initialize strategy pools
+        self.high_vol_pool = [
+            UltraVolatilityExploitation(),
+            BreakoutMomentum()
+        ]
         
-    def run_aggressive_meta_system(self, test_period_days: int = 10) -> Dict:
-        """Run the aggressive meta-trading system for 10 trading days"""
+        self.trending_pool = [
+            UltraMomentumAmplification(),
+            AcceleratedMACross()
+        ]
         
-        # Get the most recent data for testing
-        test_end_date = self.data.index.max()
-        test_start_date = test_end_date - timedelta(days=test_period_days)
-        training_end_date = test_start_date - timedelta(days=1)
-        training_start_date = training_end_date - timedelta(days=60)  # 60 days training
+        self.ranging_pool = [
+            UltraHighFrequencyScalping(),
+            ExtremeMeanReversion()
+        ]
+        
+        # Initialize selector
+        self.selector = AggressiveStrategySelector()
+        
+        # Load data
+        print("Loading data...")
+        self.data = pickle.load(open('polygon_QQQ_1m.pkl', 'rb'))
+        
+        # Convert index to datetime if needed
+        if not isinstance(self.data.index, pd.DatetimeIndex):
+            try:
+                self.data.index = pd.to_datetime(self.data.index)
+            except ValueError:
+                self.data.index = pd.to_datetime(self.data.index, utc=True)
+        
+        # Handle timezone if present
+        if self.data.index.tz is not None:
+            self.data.index = self.data.index.tz_localize(None)
+        
+        # Filter to trading hours and weekdays
+        self.data = self.data.between_time('09:30', '16:00')
+        self.data = self.data[self.data.index.dayofweek < 5]
+        
+        # Filter to last 5 years
+        five_years_ago = self.data.index.max() - timedelta(days=5*365)
+        self.data = self.data[self.data.index >= five_years_ago]
+        
+        print(f"Data loaded: {len(self.data)} records from {self.data.index.min()} to {self.data.index.max()}")
+    
+    def run_aggressive_meta_system(self, test_period_days: int = 10) -> dict:
+        """Run the aggressive meta-trading system with regime detection"""
+        print(f"\nRunning MetaTradingAI v2.1: The Adaptive Aggression Model...")
+        
+        # Calculate date ranges
+        end_date = self.data.index.max()
+        test_start_date = end_date - timedelta(days=test_period_days)
+        training_start_date = test_start_date - timedelta(days=60)
         
         print(f"Aggressive Meta-Trading AI System Setup:")
-        print(f"  Training period: {training_start_date} to {training_end_date}")
-        print(f"  Test period: {test_start_date} to {test_end_date}")
+        print(f"  Training period: {training_start_date.date()} to {test_start_date.date()}")
+        print(f"  Test period: {test_start_date.date()} to {end_date.date()}")
         print(f"  Target: 5% return over {test_period_days} trading days")
         
-        # Get training and test data
-        training_data = self.data[(self.data.index >= training_start_date) & 
-                                (self.data.index <= training_end_date)]
-        test_data = self.data[(self.data.index >= test_start_date) & 
-                             (self.data.index <= test_end_date)]
+        # Split data
+        training_data = self.data[(self.data.index >= training_start_date) & (self.data.index < test_start_date)]
+        test_data = self.data[self.data.index >= test_start_date]
         
         print(f"  Training data: {len(training_data)} records")
         print(f"  Test data: {len(test_data)} records")
-        
-        # Start timing
-        self.start_time = time.time()
         
         # Test all strategies on training data to get performance baseline
         print(f"\nTesting all strategies on training data...")
         strategy_performances = {}
         
-        for i, strategy in enumerate(self.strategies):
-            print(f"  [{i+1}/{len(self.strategies)}] Testing {strategy.name}...")
+        all_strategies = self.high_vol_pool + self.trending_pool + self.ranging_pool
+        
+        for i, strategy in enumerate(all_strategies):
+            print(f"  [{i+1}/{len(all_strategies)}] Testing {strategy.name}...")
             results = strategy.backtest(training_data)
             strategy_performances[strategy.name] = [results['avg_hourly_return']]
-            
-            print(f"    Avg hourly return: {results['avg_hourly_return']:.4f}")
-            print(f"    Total return: {results['total_return']:.4f}")
-            print(f"    Sharpe ratio: {results['sharpe_ratio']:.3f}")
         
         # Train strategy selector
+        self.selector.strategies = all_strategies
         self.selector.train_selector(training_data, strategy_performances)
         
         # Run aggressive meta system with detailed reporting
@@ -558,39 +624,59 @@ class AggressiveMetaTradingAI:
             'hourly_performance': [],
             'daily_performance': [],
             'selected_strategies': [],
-            'strategy_performance': {s.name: [] for s in self.strategies},
+            'strategy_performance': {s.name: [] for s in all_strategies},
             'cumulative_return': 0,
             'daily_returns': []
         }
         
-        # Group test data by day and hour
+        # Group test data by day
         test_data_daily = test_data.groupby(test_data.index.date)
         
         for date, day_data in test_data_daily:
             print(f"\n=== Trading Day: {date} ===")
+            
+            # Detect market regime for this day
+            regime = detect_market_regime(day_data)
+            print(f"  Market Regime Detected: {regime.upper()}")
+            
+            # Select strategy pool based on regime
+            if regime == "high_volatility":
+                active_strategies = self.high_vol_pool
+                print(f"  Active Pool: High Volatility ({len(active_strategies)} strategies)")
+            elif regime == "trending":
+                active_strategies = self.trending_pool
+                print(f"  Active Pool: Trending ({len(active_strategies)} strategies)")
+            else:
+                active_strategies = self.ranging_pool
+                print(f"  Active Pool: Ranging ({len(active_strategies)} strategies)")
+            
+            # Update selector to use the active pool
+            self.selector.strategies = active_strategies
+            
+            # Group day data by hour
+            day_data_hourly = day_data.groupby(day_data.index.hour)
+            
             daily_return = 0
             daily_trades = 0
             
-            # Group by hour for this day
-            day_data_hourly = day_data.groupby(day_data.index.hour)
-            
             for hour, hour_data in day_data_hourly:
-                if len(hour_data) == 0:
+                if len(hour_data) < 10:  # Skip hours with insufficient data
                     continue
-                    
-                print(f"  Hour {hour:02d}:00 - Selecting best strategy...")
                 
                 # Select best strategy for this hour
-                selected_strategy = self.selector.select_best_strategy(hour_data)
+                selected_strategy = self.selector.select_strategy(hour_data)
+                if selected_strategy is None:
+                    continue
                 
-                # Run selected strategy for this hour
+                # Run strategy for this hour
                 strategy_results = selected_strategy.backtest(hour_data)
                 
-                # Store results
+                # Record performance
                 hourly_perf = {
                     'date': date,
                     'hour': hour,
                     'selected_strategy': selected_strategy.name,
+                    'regime': regime,
                     'avg_hourly_return': strategy_results['avg_hourly_return'],
                     'total_return': strategy_results['total_return'],
                     'num_trades': strategy_results['num_trades']
@@ -598,160 +684,59 @@ class AggressiveMetaTradingAI:
                 
                 results['hourly_performance'].append(hourly_perf)
                 results['selected_strategies'].append(selected_strategy.name)
+                results['strategy_performance'][selected_strategy.name].append(strategy_results['avg_hourly_return'])
                 
-                # Update daily tracking
                 daily_return += strategy_results['total_return']
                 daily_trades += strategy_results['num_trades']
                 
-                # Update strategy performance tracking
-                for strategy in self.strategies:
-                    if strategy.name == selected_strategy.name:
-                        results['strategy_performance'][strategy.name].append(
-                            strategy_results['avg_hourly_return']
-                        )
-                    else:
-                        results['strategy_performance'][strategy.name].append(0)
-                
-                print(f"    Selected: {selected_strategy.name}")
-                print(f"    Hourly return: {strategy_results['avg_hourly_return']:.4f} ({strategy_results['avg_hourly_return']*100:.2f}%)")
-                print(f"    Trades: {strategy_results['num_trades']}")
+                print(f"  Hour {hour:02d}:00 - Selected: {selected_strategy.name}")
+                print(f"    Return: {strategy_results['total_return']:.4f} ({strategy_results['total_return']*100:.2f}%), Trades: {strategy_results['num_trades']}")
             
-            # Store daily performance
-            daily_perf = {
-                'date': date,
-                'daily_return': daily_return,
-                'daily_trades': daily_trades,
-                'cumulative_return': results['cumulative_return'] + daily_return
-            }
-            
-            results['daily_performance'].append(daily_perf)
-            results['daily_returns'].append(daily_return)
+            # Update cumulative return
             results['cumulative_return'] += daily_return
+            results['daily_returns'].append(daily_return)
             
+            # Daily summary
             print(f"  Daily Summary: Return: {daily_return:.4f} ({daily_return*100:.2f}%), Trades: {daily_trades}")
             print(f"  Cumulative Return: {results['cumulative_return']:.4f} ({results['cumulative_return']*100:.2f}%)")
         
-        # Final timing
-        total_time = time.time() - self.start_time
-        print(f"\nAggressive meta-trading system completed in {total_time:.1f} seconds")
+        # Final results
+        print(f"\n🎯 TARGET ACHIEVEMENT:")
+        print(f"  Target: 5% return over {test_period_days} trading days")
+        print(f"  Actual: {results['cumulative_return']:.4f} ({results['cumulative_return']*100:.2f}%)")
+        
+        if results['cumulative_return'] >= 0.05:
+            print(f"  Status: ✅ ACHIEVED")
+        else:
+            print(f"  Status: ❌ NOT ACHIEVED")
+        
+        # Strategy distribution
+        strategy_counts = {}
+        for strategy_name in results['selected_strategies']:
+            strategy_counts[strategy_name] = strategy_counts.get(strategy_name, 0) + 1
+        
+        print(f"\n📊 STRATEGY DISTRIBUTION:")
+        total_selections = len(results['selected_strategies'])
+        for strategy_name, count in strategy_counts.items():
+            percentage = (count / total_selections * 100) if total_selections > 0 else 0
+            print(f"  {strategy_name}: {percentage:.1f}% ({count} hours)")
         
         return results
 
-
-def analyze_aggressive_results(results: Dict) -> None:
-    """Analyze and display aggressive meta-trading results"""
-    
-    print("\n" + "="*80)
-    print("AGGRESSIVE META-TRADING AI RESULTS")
-    print("="*80)
-    
-    # Calculate overall performance
-    total_return = results['cumulative_return']
-    total_trades = sum(perf['num_trades'] for perf in results['hourly_performance'])
-    strategy_counts = {}
-    
-    for perf in results['hourly_performance']:
-        strategy = perf['selected_strategy']
-        strategy_counts[strategy] = strategy_counts.get(strategy, 0) + 1
-    
-    print(f"\n🎯 TARGET ACHIEVEMENT:")
-    target_achieved = total_return >= 0.05
-    print(f"  Target: 5% return over 10 trading days")
-    print(f"  Actual: {total_return:.4f} ({total_return*100:.2f}%)")
-    print(f"  Status: {'✅ ACHIEVED' if target_achieved else '❌ NOT ACHIEVED'}")
-    
-    print(f"\n📊 OVERALL PERFORMANCE:")
-    print(f"  Total Return: {total_return:.4f} ({total_return*100:.2f}%)")
-    print(f"  Total Trades: {total_trades}")
-    if len(results['hourly_performance']) > 0:
-        avg_return_per_hour = total_return / len(results['hourly_performance'])
-        print(f"  Average Return per Hour: {avg_return_per_hour:.4f}")
-    
-    print(f"\n📈 DAILY PERFORMANCE BREAKDOWN:")
-    for daily_perf in results['daily_performance']:
-        date = daily_perf['date']
-        daily_return = daily_perf['daily_return']
-        cumulative = daily_perf['cumulative_return']
-        trades = daily_perf['daily_trades']
-        
-        print(f"  {date}: {daily_return:.4f} ({daily_return*100:.2f}%) - "
-              f"Cumulative: {cumulative:.4f} ({cumulative*100:.2f}%) - "
-              f"Trades: {trades}")
-    
-    print(f"\n🎲 STRATEGY SELECTION DISTRIBUTION:")
-    for strategy, count in strategy_counts.items():
-        percentage = (count / len(results['hourly_performance'])) * 100
-        print(f"  {strategy}: {count} hours ({percentage:.1f}%)")
-    
-    print(f"\n📋 STRATEGY PERFORMANCE SUMMARY:")
-    for strategy_name, performances in results['strategy_performance'].items():
-        active_performances = [p for p in performances if p > 0]
-        if active_performances:
-            avg_performance = np.mean(active_performances)
-            print(f"  {strategy_name}: {avg_performance:.4f} avg return when selected")
-    
-    # Show hourly breakdown for first few hours
-    print(f"\n⏰ HOURLY PERFORMANCE BREAKDOWN (First 10 hours):")
-    for perf in results['hourly_performance'][:10]:
-        print(f"  {perf['date']} {perf['hour']:02d}:00 - {perf['selected_strategy']} - "
-              f"Return: {perf['avg_hourly_return']:.4f} ({perf['avg_hourly_return']*100:.2f}%)")
-
-
 def main():
     """Main execution function"""
+    start_time = datetime.now()
     
-    # Load data
-    print("Loading data...")
-    data = pickle.load(open('polygon_QQQ_1m.pkl', 'rb'))
+    # Initialize and run the system
+    system = AggressiveMetaTradingAI()
+    results = system.run_aggressive_meta_system(test_period_days=10)
     
-    # Convert index to datetime if needed
-    if not isinstance(data.index, pd.DatetimeIndex):
-        try:
-            data.index = pd.to_datetime(data.index)
-        except ValueError:
-            data.index = pd.to_datetime(data.index, utc=True)
+    end_time = datetime.now()
+    execution_time = (end_time - start_time).total_seconds()
     
-    if data.index.tz is not None:
-        data.index = data.index.tz_localize(None)
-    
-    # Filter to trading hours and weekdays
-    data = data.between_time('09:30', '16:00')
-    data = data[data.index.dayofweek < 5]
-    
-    # Filter to last 5 years of data
-    five_years_ago = data.index.max() - timedelta(days=5*365)
-    data = data[data.index >= five_years_ago]
-    
-    print(f"Data shape after filtering: {data.shape}")
-    print(f"Date range: {data.index.min()} to {data.index.max()}")
-    print(f"Using last 5 years of data for faster processing")
-    
-    # Define aggressive meta-trading strategies
-    strategies = [
-        AggressiveVolatilityExploitation(),
-        AggressiveMomentumAmplification(),
-        AggressiveGapExploitation(),
-        AggressiveHighFrequencyScalping()
-    ]
-    
-    # Create aggressive meta-trading AI system
-    aggressive_system = AggressiveMetaTradingAI(data, strategies)
-    
-    # Run aggressive meta-trading system
-    print("\nRunning aggressive meta-trading AI system...")
-    results = aggressive_system.run_aggressive_meta_system(test_period_days=10)
-    
-    # Analyze results
-    analyze_aggressive_results(results)
-    
-    # Save results
-    with open('aggressive_meta_trading_results.pkl', 'wb') as f:
-        pickle.dump(results, f)
-    
-    print(f"\nResults saved to 'aggressive_meta_trading_results.pkl'")
+    print(f"\n⏱️ EXECUTION TIME: {execution_time:.1f} seconds")
     
     return results
-
 
 if __name__ == "__main__":
     results = main() 
