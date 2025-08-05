@@ -70,43 +70,89 @@ class AggressiveMetaStrategy:
         trades = []
         hourly_returns = []
         
+        # Realistic trading constraints
+        transaction_cost = 0.00002  # 0.002% per trade (realistic for liquid ETFs)
+        slippage = 0.00001  # 0.001% slippage per trade
+        max_position_size = 0.20  # 20% of capital per trade
+        min_hold_period = 5  # Minimum 5 minutes between trades
+        last_trade_time = None
+        
         for i in range(1, len(data)):
             current_price = data.iloc[i]['close']
             prev_price = data.iloc[i-1]['close']
+            current_time = data.index[i]
             
-            # Update position based on signals
-            if signals.iloc[i] == 1 and position <= 0:  # Buy signal
+            # Check minimum hold period
+            can_trade = True
+            if last_trade_time is not None:
+                time_diff = (current_time - last_trade_time).total_seconds() / 60
+                if time_diff < min_hold_period:
+                    can_trade = False
+            
+            # Update position based on signals (with realistic constraints)
+            if signals.iloc[i] == 1 and position <= 0 and can_trade:  # Buy signal
                 if position == -1:  # Close short
+                    # Apply slippage and transaction costs
+                    exit_price = current_price * (1 - slippage)
+                    pnl = prev_price - exit_price
+                    position_value = capital * max_position_size
+                    trade_pnl = pnl * position_value / prev_price
+                    capital += trade_pnl
+                    capital -= capital * transaction_cost  # Transaction cost
+                    
                     trades.append({
                         'entry_time': data.index[i-1],
                         'exit_time': data.index[i],
                         'entry_price': prev_price,
-                        'exit_price': current_price,
+                        'exit_price': exit_price,
                         'type': 'short',
-                        'pnl': prev_price - current_price
+                        'pnl': trade_pnl
                     })
+                    last_trade_time = current_time
+                
+                # Enter long position
+                entry_price = current_price * (1 + slippage)
                 position = 1
-            elif signals.iloc[i] == -1 and position >= 0:  # Sell signal
+                capital -= capital * transaction_cost  # Transaction cost
+                last_trade_time = current_time
+                
+            elif signals.iloc[i] == -1 and position >= 0 and can_trade:  # Sell signal
                 if position == 1:  # Close long
+                    # Apply slippage and transaction costs
+                    exit_price = current_price * (1 - slippage)
+                    pnl = exit_price - prev_price
+                    position_value = capital * max_position_size
+                    trade_pnl = pnl * position_value / prev_price
+                    capital += trade_pnl
+                    capital -= capital * transaction_cost  # Transaction cost
+                    
                     trades.append({
                         'entry_time': data.index[i-1],
                         'exit_time': data.index[i],
                         'entry_price': prev_price,
-                        'exit_price': current_price,
+                        'exit_price': exit_price,
                         'type': 'long',
-                        'pnl': current_price - prev_price
+                        'pnl': trade_pnl
                     })
+                    last_trade_time = current_time
+                
+                # Enter short position
+                entry_price = current_price * (1 + slippage)
                 position = -1
+                capital -= capital * transaction_cost  # Transaction cost
+                last_trade_time = current_time
             
-            # Calculate returns
+            # Calculate returns with realistic position sizing
             if position == 1:  # Long position
-                hourly_return = (current_price - prev_price) / prev_price
+                position_value = capital * max_position_size
+                hourly_return = (current_price - prev_price) / prev_price * position_value / capital
             elif position == -1:  # Short position
-                hourly_return = (prev_price - current_price) / prev_price
+                position_value = capital * max_position_size
+                hourly_return = (prev_price - current_price) / prev_price * position_value / capital
             else:
                 hourly_return = 0
             
-            capital *= (1 + hourly_return)
+            capital += capital * hourly_return
             equity.append(capital)
             hourly_returns.append(hourly_return)
         
@@ -702,14 +748,20 @@ class AggressiveMetaTradingAI:
         print(f"Data loaded: {len(self.data)} records from {self.data.index.min()} to {self.data.index.max()}")
         print(f"Available strategies: {len(self.high_vol_pool + self.trending_pool + self.ranging_pool)}")
     
-    def run_aggressive_meta_system(self, test_period_days: int = 10) -> dict:
+    def run_aggressive_meta_system(self, test_period_days: int = 10, initial_capital: float = 100000) -> dict:
         """Run the ultra-aggressive meta-trading system"""
         print(f"\nRunning MetaTradingAI v3.0: The Ultra-Aggressive Intelligence Model...")
         
-        # Calculate date ranges
-        end_date = self.data.index.max()
-        test_start_date = end_date - timedelta(days=test_period_days)
-        training_start_date = test_start_date - timedelta(days=60)
+        # Calculate date ranges - use walk-forward periods if set
+        if hasattr(self, 'training_start') and hasattr(self, 'test_start'):
+            training_start_date = self.training_start
+            test_start_date = self.test_start
+            end_date = self.test_end
+        else:
+            # Fallback to hardcoded calculation
+            end_date = self.data.index.max()
+            test_start_date = end_date - timedelta(days=test_period_days)
+            training_start_date = test_start_date - timedelta(days=60)
         
         print(f"Ultra-Aggressive Meta-Trading AI System Setup:")
         print(f"  Training period: {training_start_date.date()} to {test_start_date.date()}")
@@ -746,6 +798,7 @@ class AggressiveMetaTradingAI:
             'selected_strategies': [],
             'strategy_performance': {s.name: [] for s in all_strategies},
             'cumulative_return': 0,
+            'total_trades': 0,
             'daily_returns': []
         }
         
@@ -789,7 +842,7 @@ class AggressiveMetaTradingAI:
                     continue
                 
                 # Run strategy for this hour
-                strategy_results = selected_strategy.backtest(hour_data)
+                strategy_results = selected_strategy.backtest(hour_data, initial_capital)
                 
                 # Record performance
                 hourly_perf = {
@@ -808,6 +861,7 @@ class AggressiveMetaTradingAI:
                 
                 daily_return += strategy_results['total_return']
                 daily_trades += strategy_results['num_trades']
+                results['total_trades'] += strategy_results['num_trades']
                 
                 print(f"  Hour {hour:02d}:00 - Selected: {selected_strategy.name}")
                 print(f"    Return: {strategy_results['total_return']:.4f} ({strategy_results['total_return']*100:.2f}%), Trades: {strategy_results['num_trades']}")
@@ -825,7 +879,9 @@ class AggressiveMetaTradingAI:
         print(f"  Target: 5% return over {test_period_days} trading days")
         print(f"  Actual: {results['cumulative_return']:.4f} ({results['cumulative_return']*100:.2f}%)")
         
-        if results['cumulative_return'] >= 0.05:
+        results['target_achieved'] = results['cumulative_return'] >= 0.05
+        
+        if results['target_achieved']:
             print(f"  Status: ✅ ACHIEVED")
         else:
             print(f"  Status: ❌ NOT ACHIEVED")
