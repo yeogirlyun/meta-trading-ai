@@ -1,6 +1,27 @@
-pandas>=1.5.0
-numpy>=1.21.0
-scipy>=1.9.0
-scikit-learn>=1.1.0
-matplotlib>=3.5.0
-seaborn>=0.11.0 
+# Core data science and machine learning
+pandas>=2.0.0
+numpy>=1.20.0
+scipy>=1.8.0
+scikit-learn>=1.0.0
+
+# Advanced algorithms
+arch>=7.0.0
+pykalman>=0.10.0
+
+# Live trading APIs
+polygon-api-client>=1.12.0
+alpaca-trade-api>=3.0.0
+kafka-python>=2.0.0
+
+# Additional utilities
+requests>=2.25.0
+websocket-client>=1.0.0
+python-dotenv>=0.19.0
+
+# Logging and monitoring
+logging>=0.5.1.2
+
+# Development and testing
+pytest>=6.0.0
+black>=21.0.0
+flake8>=3.8.0 
